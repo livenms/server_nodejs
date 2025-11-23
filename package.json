@@ -1,7 +1,7 @@
 {
-  "name": "fingerprint-dashboard",
+  "name": "fingerprint-dashboard-mqtt",
   "version": "1.0.0",
-  "description": "Dashboard for fingerprint security system",
+  "description": "Fingerprint security system with MQTT",
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
@@ -10,6 +10,7 @@
   "dependencies": {
     "express": "^4.18.2",
     "socket.io": "^4.7.2",
+    "mqtt": "^4.3.7",
     "sqlite3": "^5.1.6",
     "cors": "^2.8.5"
   },
