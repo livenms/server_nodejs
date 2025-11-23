@@ -24,7 +24,6 @@ const mqttClient = mqtt.connect(MQTT_BROKER);
 
 // Store connected devices and data
 const connectedDevices = new Map();
-const deviceCommands = new Map();
 
 mqttClient.on('connect', () => {
   console.log('✅ Connected to MQTT broker');
@@ -39,54 +38,72 @@ mqttClient.on('connect', () => {
 
 mqttClient.on('message', (topic, message) => {
   try {
-    const data = JSON.parse(message.toString());
+    const messageString = message.toString();
     const topicParts = topic.split('/');
     const deviceId = topicParts[1];
     const messageType = topicParts[2];
     
-    console.log(`📨 MQTT [${deviceId}/${messageType}]:`, data.type || 'update');
+    console.log(`📨 MQTT [${deviceId}/${messageType}]: ${messageString.substring(0, 100)}`);
     
+    let data;
+    
+    // Try to parse as JSON, if fails treat as plain text
+    try {
+      data = JSON.parse(messageString);
+    } catch (jsonError) {
+      // It's plain text - create a simple data object
+      data = {
+        type: 'message',
+        text: messageString,
+        deviceId: deviceId,
+        timestamp: new Date().toISOString()
+      };
+    }
+
     // Update device last seen
     connectedDevices.set(deviceId, {
       ...connectedDevices.get(deviceId),
       lastSeen: new Date(),
-      status: 'online'
+      status: 'online',
+      ip: data.ip || connectedDevices.get(deviceId)?.ip,
+      rssi: data.rssi || connectedDevices.get(deviceId)?.rssi
     });
 
-    // Route messages to Socket.IO
-    switch(messageType) {
-      case 'heartbeat':
-        io.emit('heartbeat', { ...data, deviceId, timestamp: new Date() });
-        break;
-        
-      case 'status':
-        io.emit('status', { ...data, deviceId });
+    // Route messages to Socket.IO based on message type
+    if (data.type === 'heartbeat' || messageType === 'heartbeat') {
+      io.emit('heartbeat', { ...data, deviceId, timestamp: new Date() });
+    }
+    else if (data.type === 'status' || messageType === 'status') {
+      io.emit('status', { ...data, deviceId });
+      if (data.users) {
         updateUsers(deviceId, data.users);
-        break;
-        
-      case 'access':
-        io.emit('access', { 
-          ...data, 
-          deviceId, 
-          timestamp: new Date(),
-          type: data.granted ? 'success' : 'error'
-        });
-        saveAccessLog(deviceId, data);
-        break;
-        
-      case 'enrollment':
-        io.emit('enrollment', { ...data, deviceId, timestamp: new Date() });
-        saveSystemLog(deviceId, 'enrollment', data.status);
-        break;
-        
-      case 'device-event':
-        io.emit('device-event', { ...data, deviceId, timestamp: new Date() });
-        saveSystemLog(deviceId, 'system', data.action || data.message);
-        break;
+      }
+    }
+    else if (data.type === 'access' || messageType === 'access') {
+      io.emit('access', { 
+        ...data, 
+        deviceId, 
+        timestamp: new Date(),
+        messageType: data.granted ? 'success' : 'error'
+      });
+      saveAccessLog(deviceId, data);
+    }
+    else if (data.type === 'enrollment' || messageType === 'enrollment') {
+      io.emit('enrollment', { ...data, deviceId, timestamp: new Date() });
+      saveSystemLog(deviceId, 'enrollment', data.status || data.text);
+    }
+    else if (data.type === 'device-event' || messageType === 'device-event') {
+      io.emit('device-event', { ...data, deviceId, timestamp: new Date() });
+      saveSystemLog(deviceId, 'system', data.action || data.message || data.text);
+    }
+    else {
+      // Generic message handling
+      io.emit('message', { ...data, deviceId, timestamp: new Date(), topic });
     }
     
   } catch (error) {
     console.error('❌ Error processing MQTT message:', error);
+    console.error('Message content:', message.toString());
   }
 });
 
@@ -96,7 +113,7 @@ app.use(express.json());
 app.use(express.static('public'));
 
 // Database setup
-const db = new sqlite3.Database('./fingerprint.db');
+const db = new sqlite3.Database(':memory:'); // Use :memory: for Render, or './fingerprint.db' for persistent
 
 db.serialize(() => {
   db.run(`CREATE TABLE IF NOT EXISTS devices (
@@ -151,17 +168,21 @@ function updateUsers(deviceId, users) {
 }
 
 function saveAccessLog(deviceId, data) {
-  db.run(
-    `INSERT INTO access_logs (deviceId, userName, userId, granted) VALUES (?, ?, ?, ?)`,
-    [deviceId, data.name, data.id, data.granted]
-  );
+  if (data.name !== undefined && data.id !== undefined && data.granted !== undefined) {
+    db.run(
+      `INSERT INTO access_logs (deviceId, userName, userId, granted) VALUES (?, ?, ?, ?)`,
+      [deviceId, data.name, data.id, data.granted]
+    );
+  }
 }
 
 function saveSystemLog(deviceId, type, message) {
-  db.run(
-    `INSERT INTO system_logs (deviceId, type, message) VALUES (?, ?, ?)`,
-    [deviceId, type, message]
-  );
+  if (message) {
+    db.run(
+      `INSERT INTO system_logs (deviceId, type, message) VALUES (?, ?, ?)`,
+      [deviceId, type, message]
+    );
+  }
 }
 
 // Command endpoints - Send commands via MQTT
@@ -267,7 +288,7 @@ app.post('/api/command/getstatus', (req, res) => {
 
 // Data retrieval endpoints
 app.get('/api/devices', (req, res) => {
-  // Return both database devices and currently connected ones
+  // Return currently connected devices
   const onlineDevices = Array.from(connectedDevices.entries()).map(([deviceId, data]) => ({
     deviceId,
     ip: data.ip || 'Unknown',
@@ -276,13 +297,7 @@ app.get('/api/devices', (req, res) => {
     rssi: data.rssi
   }));
 
-  db.all(`SELECT * FROM devices ORDER BY lastSeen DESC`, (err, rows) => {
-    if (err) return res.status(500).json({ error: err.message });
-    
-    // Merge online devices with database devices
-    const allDevices = [...onlineDevices];
-    res.json(allDevices);
-  });
+  res.json(onlineDevices);
 });
 
 app.get('/api/access-logs', (req, res) => {
@@ -335,7 +350,7 @@ app.get('/health', (req, res) => {
   });
 });
 
-const PORT = process.env.PORT || 3000;
+const PORT = process.env.PORT || 10000;
 server.listen(PORT, () => {
   console.log(`🚀 Fingerprint Dashboard running on port ${PORT}`);
   console.log(`📊 Dashboard: http://localhost:${PORT}`);
