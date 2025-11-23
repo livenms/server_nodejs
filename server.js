@@ -1,68 +1,77 @@
-const express = require("express");
-const fs = require("fs");
+import express from "express";
+import bodyParser from "body-parser";
+import fs from "fs";
+import path from "path";
+
 const app = express();
+const PORT = process.env.PORT || 3000;
 
-// =================== CONFIG ===================
-const PORT = process.env.PORT || 10000; // Render sets a PORT env variable
-const STATE_FILE = "state.json";
+// Accept plain hex string
+app.use(bodyParser.text({ type: "*/*" }));
 
-// =================== LOAD OR INIT STATE ===================
-let state = {
-  server_message: "Hello ESP",
-  led_command: "OFF"
-};
+// Folder for templates
+const TEMPLATE_DIR = "./templates";
+if (!fs.existsSync(TEMPLATE_DIR)) fs.mkdirSync(TEMPLATE_DIR);
 
-if (fs.existsSync(STATE_FILE)) {
+// Save fingerprint template
+app.post("/finger/save", (req, res) => {
   try {
-    state = JSON.parse(fs.readFileSync(STATE_FILE));
-  } catch (err) {
-    console.log("Failed to load state.json, using default state.");
-  }
-}
+    const hex = req.body.replace(/[\s\r\n]+/g, " ").trim();
+    const bytes = hex.split(" ").map(h => parseInt(h, 16));
+    const buffer = Buffer.from(bytes);
 
-// Helper to save state to file
-function saveState() {
-  fs.writeFileSync(STATE_FILE, JSON.stringify(state));
-}
-
-// =================== MIDDLEWARE ===================
-app.use(express.json());
-
-// =================== ROUTES ===================
-
-// Root page (test in browser)
-app.get("/", (req, res) => {
-  res.send(`
-    <h2>ESP A6 Server</h2>
-    <p>LED: ${state.led_command}</p>
-    <a href="/esp?led=ON">Turn ON</a><br>
-    <a href="/esp?led=OFF">Turn OFF</a>
-  `);
-});
-
-// ESP endpoint
-app.get("/esp", (req, res) => {
-  // Check if LED command is provided
-  if (req.query.led) {
-    const cmd = req.query.led.toUpperCase();
-    if (cmd === "ON" || cmd === "OFF") {
-      state.led_command = cmd;
-      state.server_message = `LED -> ${cmd}`;
-      saveState();
-      console.log(`LED changed to ${cmd}`);
+    if (buffer.length !== 512) {
+      return res.status(400).json({
+        status: "error",
+        msg: `Template size must be 512 bytes, got ${buffer.length}`
+      });
     }
+
+    const id = Date.now();
+    const filename = `${TEMPLATE_DIR}/${id}.bin`;
+
+    fs.writeFileSync(filename, buffer);
+
+    res.json({
+      status: "ok",
+      id,
+      size: buffer.length,
+      message: "Template saved successfully"
+    });
+
+  } catch (err) {
+    res.status(400).json({ status: "error", msg: err.message });
+  }
+});
+
+// List all templates
+app.get("/finger/list", (req, res) => {
+  const files = fs.readdirSync(TEMPLATE_DIR)
+    .map(f => ({
+      id: f.replace(".bin", ""),
+      filename: f
+    }));
+
+  res.json(files);
+});
+
+// Download a template for ESP32
+app.get("/finger/get/:id", (req, res) => {
+  const id = req.params.id;
+  const filepath = path.join(TEMPLATE_DIR, `${id}.bin`);
+
+  if (!fs.existsSync(filepath)) {
+    return res.status(404).json({ status: "error", msg: "Template not found" });
   }
 
-  // Return JSON to ESP
-  res.json(state);
+  res.download(filepath);
 });
 
-// Fallback for undefined routes
-app.use((req, res) => {
-  res.status(404).send("Route not found");
+// Server root
+app.get("/", (req, res) => {
+  res.send("Fingerprint Template Server Running");
 });
 
-// =================== START SERVER ===================
-app.listen(PORT, () => {
-  console.log(`Server running on port ${PORT}`);
-});
+app.listen(PORT, () =>
+  console.log(`Server running on port ${PORT}`)
+);
