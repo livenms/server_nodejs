@@ -20,7 +20,7 @@ app.use(express.json());
 app.use(express.static('public'));
 
 // Database setup
-const db = new sqlite3.Database('./fingerprint.db');
+const db = new sqlite3.Database(':memory:'); // Use persistent database in production
 
 // Create tables
 db.serialize(() => {
@@ -39,8 +39,7 @@ db.serialize(() => {
     userName TEXT,
     userId INTEGER,
     granted BOOLEAN,
-    timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
-    FOREIGN KEY (deviceId) REFERENCES devices (deviceId)
+    timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
   )`);
 
   db.run(`CREATE TABLE IF NOT EXISTS users (
@@ -49,8 +48,7 @@ db.serialize(() => {
     userId INTEGER,
     userName TEXT,
     userPhone TEXT,
-    enrolledAt DATETIME DEFAULT CURRENT_TIMESTAMP,
-    FOREIGN KEY (deviceId) REFERENCES devices (deviceId)
+    enrolledAt DATETIME DEFAULT CURRENT_TIMESTAMP
   )`);
 
   db.run(`CREATE TABLE IF NOT EXISTS system_logs (
@@ -58,8 +56,7 @@ db.serialize(() => {
     deviceId TEXT,
     type TEXT,
     message TEXT,
-    timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
-    FOREIGN KEY (deviceId) REFERENCES devices (deviceId)
+    timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
   )`);
 });
 
@@ -68,6 +65,7 @@ const deviceCommands = new Map();
 
 // Webhook endpoints for ESP32 to send data
 app.post('/api/webhook/heartbeat', (req, res) => {
+  console.log('Heartbeat received:', req.body);
   const { deviceId, type, uptime, wifi, ip } = req.body;
   
   // Update device status
@@ -87,6 +85,7 @@ app.post('/api/webhook/heartbeat', (req, res) => {
 });
 
 app.post('/api/webhook/status', (req, res) => {
+  console.log('Status received:', req.body);
   const { deviceId, users, totalUsers, maxUsers, sensor, enrolling } = req.body;
   
   // Update users for this device
@@ -108,6 +107,7 @@ app.post('/api/webhook/status', (req, res) => {
 });
 
 app.post('/api/webhook/access', (req, res) => {
+  console.log('Access log received:', req.body);
   const { deviceId, name, id, granted, timestamp } = req.body;
   
   db.run(
@@ -128,6 +128,7 @@ app.post('/api/webhook/access', (req, res) => {
 });
 
 app.post('/api/webhook/enrollment', (req, res) => {
+  console.log('Enrollment update:', req.body);
   const { deviceId, status, step, id, name, enrolling } = req.body;
   
   io.emit('enrollment', {
@@ -150,6 +151,7 @@ app.post('/api/webhook/enrollment', (req, res) => {
 });
 
 app.post('/api/webhook/device-event', (req, res) => {
+  console.log('Device event:', req.body);
   const { deviceId, action, id, name } = req.body;
   
   io.emit('device-event', {
@@ -171,6 +173,7 @@ app.post('/api/webhook/device-event', (req, res) => {
 // Command endpoints for dashboard to send commands to ESP32
 app.post('/api/command/enroll', (req, res) => {
   const { deviceId, id, name, phone } = req.body;
+  console.log('Enroll command:', req.body);
   
   if (!deviceId || !id || !name) {
     return res.status(400).json({ error: 'Missing required fields' });
@@ -190,6 +193,7 @@ app.post('/api/command/enroll', (req, res) => {
 
 app.post('/api/command/delete', (req, res) => {
   const { deviceId, id } = req.body;
+  console.log('Delete command:', req.body);
   
   if (!deviceId || !id) {
     return res.status(400).json({ error: 'Missing deviceId or id' });
@@ -206,6 +210,7 @@ app.post('/api/command/delete', (req, res) => {
 
 app.post('/api/command/clear', (req, res) => {
   const { deviceId } = req.body;
+  console.log('Clear command:', req.body);
   
   if (!deviceId) {
     return res.status(400).json({ error: 'Missing deviceId' });
@@ -221,6 +226,7 @@ app.post('/api/command/clear', (req, res) => {
 
 app.post('/api/command/getstatus', (req, res) => {
   const { deviceId } = req.body;
+  console.log('Get status command:', req.body);
   
   if (!deviceId) {
     return res.status(400).json({ error: 'Missing deviceId' });
@@ -238,6 +244,8 @@ app.post('/api/command/getstatus', (req, res) => {
 app.get('/api/device/commands/:deviceId', (req, res) => {
   const { deviceId } = req.params;
   const command = deviceCommands.get(deviceId);
+  
+  console.log('Device checking commands:', deviceId, command);
   
   if (command) {
     deviceCommands.delete(deviceId);
@@ -302,6 +310,11 @@ app.get('/api/system-logs', (req, res) => {
 // Serve dashboard
 app.get('/', (req, res) => {
   res.sendFile(path.join(__dirname, 'public', 'index.html'));
+});
+
+// Health check endpoint
+app.get('/health', (req, res) => {
+  res.json({ status: 'OK', timestamp: new Date().toISOString() });
 });
 
 const PORT = process.env.PORT || 3000;
