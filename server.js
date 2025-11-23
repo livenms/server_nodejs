@@ -5,73 +5,65 @@ import path from "path";
 
 const app = express();
 app.use(cors());
-
-// =========================
-// RAW BINARY BODY HANDLER
-// =========================
 app.use(express.raw({ type: "application/octet-stream", limit: "1mb" }));
 
-// Create template storage folder
 const templateDir = "./templates";
 await fs.ensureDir(templateDir);
 
-function templatePath(id) {
-  return path.join(templateDir, `${id}.bin`);
-}
+const attendanceFile = "./attendance.json";
+await fs.ensureFile(attendanceFile);
 
-// =========================
-// UPLOAD TEMPLATE
-// =========================
+// Save template
 app.post("/upload/:id", async (req, res) => {
   try {
     const id = req.params.id;
     const data = req.body;
+    if (!data || data.length !== 512)
+      return res.status(400).json({ error: "Template must be 512 bytes" });
 
-    if (!data || data.length !== 512) {
-      return res.status(400).json({ error: "Invalid template length" });
-    }
-
-    await fs.writeFile(templatePath(id), data);
-
-    console.log(`Saved template ${id} (${data.length} bytes)`);
-
-    res.json({ success: true, message: `Template ${id} saved` });
+    await fs.writeFile(path.join(templateDir, `${id}.bin`), data);
+    res.json({ success: true });
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: "Failed to save template" });
   }
 });
 
-// =========================
-// DOWNLOAD TEMPLATE
-// =========================
-app.get("/get/:id", async (req, res) => {
+// Match template
+app.post("/match", async (req, res) => {
   try {
-    const id = req.params.id;
+    const incoming = req.body;
+    if (!incoming || incoming.length !== 512)
+      return res.status(400).json({ error: "Template must be 512 bytes" });
 
-    if (!await fs.pathExists(templatePath(id))) {
-      return res.status(404).json({ error: "Template not found" });
+    const files = await fs.readdir(templateDir);
+    for (const file of files) {
+      const stored = await fs.readFile(path.join(templateDir, file));
+      if (stored.equals(incoming)) {
+        // Record attendance
+        const id = path.parse(file).name;
+        let attendance = await fs.readJson(attendanceFile).catch(() => ({}));
+        attendance[id] = attendance[id] || [];
+        attendance[id].push({ timestamp: new Date().toISOString() });
+        await fs.writeJson(attendanceFile, attendance, { spaces: 2 });
+
+        return res.json({ match: true, id });
+      }
     }
 
-    const file = await fs.readFile(templatePath(id));
-
-    res.set({
-      "Content-Type": "application/octet-stream",
-      "Content-Length": file.length
-    });
-
-    res.send(file);
-
+    res.json({ match: false });
   } catch (err) {
     console.error(err);
-    res.status(500).json({ error: "Failed to read template" });
+    res.status(500).json({ error: "Match failed" });
   }
 });
 
-// =========================
-// START SERVER
-// =========================
-const PORT = process.env.PORT || 5000;
-app.listen(PORT, () => {
-  console.log(`Server running on port ${PORT}`);
+// Get attendance record
+app.get("/attendance/:id", async (req, res) => {
+  const id = req.params.id;
+  const attendance = await fs.readJson(attendanceFile).catch(() => ({}));
+  res.json({ id, attendance: attendance[id] || [] });
 });
+
+const PORT = process.env.PORT || 5000;
+app.listen(PORT, () => console.log(`Attendance server running on port ${PORT}`));
