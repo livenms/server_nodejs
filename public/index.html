@@ -721,4 +721,80 @@
             if (confirm(`Delete user ID ${userId}?`)) {
                 fetch('/api/command/delete', {
                     method: 'POST',
-                    headers: { 'Content-Type': 'application/json'
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ deviceId: currentDeviceId, id: userId })
+                })
+                .then(r => r.json())
+                .then(data => {
+                    if (data.success) {
+                        showNotification('User deletion command sent', 'success');
+                    }
+                });
+            }
+        }
+
+        function clearAllUsers() {
+            if (!currentDeviceId) {
+                showNotification('Please select a device first', 'error');
+                return;
+            }
+
+            if (confirm('Clear ALL users from the device? This cannot be undone!')) {
+                fetch('/api/command/clear', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ deviceId: currentDeviceId })
+                })
+                .then(r => r.json())
+                .then(data => {
+                    if (data.success) {
+                        showNotification('Clear all command sent', 'success');
+                        // Clear users table
+                        document.getElementById('usersTable').innerHTML = 
+                            '<tr><td colspan="4" style="text-align: center; padding: 20px;">No users enrolled</td></tr>';
+                        document.getElementById('totalUsers').textContent = '0';
+                    }
+                });
+            }
+        }
+
+        function refreshStatus() {
+            if (!currentDeviceId) {
+                showNotification('Please select a device first', 'error');
+                return;
+            }
+
+            fetch('/api/command/getstatus', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ deviceId: currentDeviceId })
+            })
+            .then(r => r.json())
+            .then(data => {
+                if (data.success) {
+                    showNotification('Status refresh command sent', 'success');
+                }
+            });
+        }
+
+        function showNotification(message, type = 'info') {
+            const notification = document.createElement('div');
+            notification.className = `notification ${type}`;
+            notification.textContent = message;
+            document.body.appendChild(notification);
+            
+            setTimeout(() => {
+                notification.remove();
+            }, 3000);
+        }
+
+        // Close modal when clicking outside
+        window.onclick = function(event) {
+            const modal = document.getElementById('enrollModal');
+            if (event.target === modal) {
+                closeEnrollModal();
+            }
+        }
+    </script>
+</body>
+</html>
