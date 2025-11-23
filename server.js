@@ -1,49 +1,77 @@
 import express from "express";
-import fs from "fs";
+import cors from "cors";
+import fs from "fs-extra";
+import path from "path";
 
 const app = express();
-app.use(express.raw({ type: "*/*", limit: "1mb" }));
+app.use(cors());
 
-// ========= STORAGE DIR =========
-const DIR = "./templates";
-if (!fs.existsSync(DIR)) fs.mkdirSync(DIR);
+// =========================
+// RAW BINARY BODY HANDLER
+// =========================
+app.use(express.raw({ type: "application/octet-stream", limit: "1mb" }));
 
-// ========= SAVE TEMPLATE (ESP32 → server) =========
-app.post("/save", (req, res) => {
-  if (req.body.length !== 512) {
-    return res.status(400).json({
-      status: "error",
-      msg: "Invalid template size. Expected exactly 512 bytes."
+// Create template storage folder
+const templateDir = "./templates";
+await fs.ensureDir(templateDir);
+
+function templatePath(id) {
+  return path.join(templateDir, `${id}.bin`);
+}
+
+// =========================
+// UPLOAD TEMPLATE
+// =========================
+app.post("/upload/:id", async (req, res) => {
+  try {
+    const id = req.params.id;
+    const data = req.body;
+
+    if (!data || data.length !== 512) {
+      return res.status(400).json({ error: "Invalid template length" });
+    }
+
+    await fs.writeFile(templatePath(id), data);
+
+    console.log(`Saved template ${id} (${data.length} bytes)`);
+
+    res.json({ success: true, message: `Template ${id} saved` });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Failed to save template" });
+  }
+});
+
+// =========================
+// DOWNLOAD TEMPLATE
+// =========================
+app.get("/get/:id", async (req, res) => {
+  try {
+    const id = req.params.id;
+
+    if (!await fs.pathExists(templatePath(id))) {
+      return res.status(404).json({ error: "Template not found" });
+    }
+
+    const file = await fs.readFile(templatePath(id));
+
+    res.set({
+      "Content-Type": "application/octet-stream",
+      "Content-Length": file.length
     });
+
+    res.send(file);
+
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Failed to read template" });
   }
-
-  const id = Date.now();
-  const file = `${DIR}/${id}.bin`;
-
-  fs.writeFileSync(file, req.body);
-
-  return res.json({
-    status: "ok",
-    id,
-    size: req.body.length
-  });
 });
 
-// ========= DOWNLOAD TEMPLATE (ESP32 ← server) =========
-app.get("/get/:id", (req, res) => {
-  const file = `${DIR}/${req.params.id}.bin`;
-  if (!fs.existsSync(file)) {
-    return res.status(404).json({ status: "error", msg: "Not found" });
-  }
-
-  res.setHeader("Content-Type", "application/octet-stream");
-  res.send(fs.readFileSync(file));
+// =========================
+// START SERVER
+// =========================
+const PORT = process.env.PORT || 5000;
+app.listen(PORT, () => {
+  console.log(`Server running on port ${PORT}`);
 });
-
-// ========= LIST TEMPLATES =========
-app.get("/list", (req, res) => {
-  const files = fs.readdirSync(DIR).map(f => f.replace(".bin", ""));
-  res.json(files);
-});
-
-app.listen(5000, () => console.log("AS608 server running on port 5000"));
