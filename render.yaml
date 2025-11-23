@@ -1,17 +1,7 @@
 services:
   - type: web
-    name: esp-a6-server
+    name: fingerprint-template-server
     env: node
-    plan: free
-    region: frankfurt
     buildCommand: "npm install"
     startCommand: "node server.js"
-
-    envVars:
-      - key: PORT
-        value: 80
-
-    disk:
-      name: data
-      mountPath: /app
-      sizeGB: 1
+    plan: free
