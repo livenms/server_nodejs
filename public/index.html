@@ -1,0 +1,157 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Fingerprint Attendance Dashboard</title>
+<style>
+body {
+    font-family: Arial, sans-serif;
+    background: #eef2f5;
+    margin: 0;
+    padding: 0;
+}
+header {
+    background: #1f5f8b;
+    color: white;
+    padding: 15px;
+    font-size: 22px;
+    text-align: center;
+}
+.container {
+    max-width: 900px;
+    margin: auto;
+    padding: 20px;
+}
+.card {
+    background: white;
+    padding: 20px;
+    margin-bottom: 20px;
+    border-radius: 8px;
+    box-shadow: 0 0 8px rgba(0,0,0,0.1);
+}
+button {
+    padding: 10px 20px;
+    background: #1f5f8b;
+    color: white;
+    border: none;
+    border-radius: 5px;
+    cursor: pointer;
+}
+button:hover {
+    background: #174865;
+}
+input {
+    padding: 10px;
+    width: 300px;
+    margin: 5px;
+}
+table {
+    width: 100%;
+    border-collapse: collapse;
+}
+table th, table td {
+    padding: 10px;
+    border-bottom: 1px solid #ccc;
+}
+</style>
+</head>
+<body>
+
+<header>Fingerprint Attendance Dashboard</header>
+
+<div class="container">
+
+    <div class="card">
+        <h3>ESP32 Control</h3>
+        <button onclick="sendCmd('register')">Register Mode</button>
+        <button onclick="sendCmd('attendance')">Attendance Mode</button>
+        <button onclick="sendCmd('clear')">Clear All Students</button>
+    </div>
+
+    <div class="card">
+        <h3>Register Student (Upload Template)</h3>
+        <input id="name" placeholder="Student Name"><br>
+        <input id="phone" placeholder="Phone Number"><br>
+        <textarea id="template" placeholder="Paste HEX template here" style="width:99%;height:120px;"></textarea><br>
+        <button onclick="uploadTemplate()">Save Student</button>
+    </div>
+
+    <div class="card">
+        <h3>Students List</h3>
+        <table id="studentsTable">
+            <tr><th>ID</th><th>Name</th><th>Phone</th></tr>
+        </table>
+    </div>
+
+    <div class="card">
+        <h3>Attendance Result</h3>
+        <div id="attendanceResult">—</div>
+    </div>
+</div>
+
+<script>
+const BASE = "";  // Auto-use current server
+
+// Send ESP32 Command
+function sendCmd(cmd) {
+    fetch(BASE + "/setCommand", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ cmd })
+    })
+    .then(r => r.json())
+    .then(d => alert("Command sent: " + d.sent));
+}
+
+// Upload template to register new user
+function uploadTemplate() {
+    const name = document.getElementById("name").value;
+    const phone = document.getElementById("phone").value;
+    const template = document.getElementById("template").value;
+
+    fetch(BASE + "/uploadTemplate", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name, phone, template })
+    })
+    .then(r => r.json())
+    .then(d => {
+        alert("Saved: " + JSON.stringify(d));
+        loadStudents();
+    });
+}
+
+// Load all students
+function loadStudents() {
+    fetch(BASE + "/students")
+    .then(r => r.json())
+    .then(list => {
+        const table = document.getElementById("studentsTable");
+        table.innerHTML = "<tr><th>ID</th><th>Name</th><th>Phone</th></tr>";
+
+        list.forEach(s => {
+            table.innerHTML += `<tr>
+                <td>${s.id}</td>
+                <td>${s.name}</td>
+                <td>${s.phone}</td>
+            </tr>`;
+        });
+    });
+}
+
+// Poll server for attendance matches
+setInterval(() => {
+    fetch("/lastMatch")
+    .then(r => r.json())
+    .then(result => {
+        if (result.name)
+            document.getElementById("attendanceResult").innerHTML =
+                `<b>${result.name}</b> ✔ Present`;
+    });
+}, 2000);
+
+loadStudents();
+</script>
+
+</body>
+</html>
