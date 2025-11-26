@@ -80,20 +80,13 @@ mqttClient.on('message', (topic, message) => {
       }
     }
     else if (data.type === 'access' || messageType === 'access') {
-      // FIX: Normalize field names - Arduino sends userName, HTML expects name
-      const normalizedData = {
-        ...data,
-        name: data.userName || data.name, // Support both field names
-        userName: data.userName || data.name,
-        id: data.userId || data.id, // Support both field names
-        userId: data.userId || data.id,
-        deviceId,
+      io.emit('access', { 
+        ...data, 
+        deviceId, 
         timestamp: new Date(),
         messageType: data.granted ? 'success' : 'error'
-      };
-      
-      io.emit('access', normalizedData);
-      saveAccessLog(deviceId, normalizedData);
+      });
+      saveAccessLog(deviceId, data);
     }
     else if (data.type === 'enrollment' || messageType === 'enrollment') {
       io.emit('enrollment', { ...data, deviceId, timestamp: new Date() });
@@ -119,8 +112,8 @@ app.use(cors());
 app.use(express.json());
 app.use(express.static('public'));
 
-// Database setup - Use persistent DB instead of :memory:
-const db = new sqlite3.Database('./fingerprint.db');
+// Database setup
+const db = new sqlite3.Database(':memory:'); // Use :memory: for Render, or './fingerprint.db' for persistent
 
 db.serialize(() => {
   db.run(`CREATE TABLE IF NOT EXISTS devices (
@@ -137,6 +130,7 @@ db.serialize(() => {
     deviceId TEXT,
     userName TEXT,
     userId INTEGER,
+    cardId TEXT,
     granted BOOLEAN,
     timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
   )`);
@@ -147,6 +141,7 @@ db.serialize(() => {
     userId INTEGER,
     userName TEXT,
     userPhone TEXT,
+    cardId TEXT,
     enrolledAt DATETIME DEFAULT CURRENT_TIMESTAMP
   )`);
 
@@ -157,8 +152,6 @@ db.serialize(() => {
     message TEXT,
     timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
   )`);
-  
-  console.log('✅ Database initialized');
 });
 
 function updateUsers(deviceId, users) {
@@ -168,12 +161,8 @@ function updateUsers(deviceId, users) {
     if (users && Array.isArray(users)) {
       users.forEach(user => {
         db.run(
-          `INSERT INTO users (deviceId, userId, userName, userPhone) VALUES (?, ?, ?, ?)`,
-          [deviceId, user.id, user.name, user.phone || ''],
-          (err) => {
-            if (err) console.error('Error inserting user:', err);
-            else console.log(`✅ User saved: ID ${user.id}, Name: ${user.name}`);
-          }
+          `INSERT INTO users (deviceId, userId, userName, userPhone, cardId) VALUES (?, ?, ?, ?, ?)`,
+          [deviceId, user.id, user.name, user.phone || '', user.cardId || '']
         );
       });
     }
@@ -181,20 +170,12 @@ function updateUsers(deviceId, users) {
 }
 
 function saveAccessLog(deviceId, data) {
-  // FIX: Support both userName and name fields
-  const userName = data.userName || data.name || 'Unknown';
-  const userId = data.userId || data.id || 0;
-  
-  console.log(`💾 Saving access log: Device=${deviceId}, User=${userName}, ID=${userId}, Granted=${data.granted}`);
-  
-  db.run(
-    `INSERT INTO access_logs (deviceId, userName, userId, granted) VALUES (?, ?, ?, ?)`,
-    [deviceId, userName, userId, data.granted ? 1 : 0],
-    (err) => {
-      if (err) console.error('Error saving access log:', err);
-      else console.log('✅ Access log saved');
-    }
-  );
+  if (data.name !== undefined && data.id !== undefined && data.granted !== undefined) {
+    db.run(
+      `INSERT INTO access_logs (deviceId, userName, userId, cardId, granted) VALUES (?, ?, ?, ?, ?)`,
+      [deviceId, data.name, data.id, data.cardId || '', data.granted]
+    );
+  }
 }
 
 function saveSystemLog(deviceId, type, message) {
@@ -208,15 +189,16 @@ function saveSystemLog(deviceId, type, message) {
 
 // Command endpoints - Send commands via MQTT
 app.post('/api/command/enroll', (req, res) => {
-  const { deviceId, id, name, phone } = req.body;
+  const { deviceId, id, cardId, name, phone } = req.body;
   
-  if (!deviceId || !id || !name) {
+  if (!deviceId || !id || !name || !cardId) {
     return res.status(400).json({ error: 'Missing required fields' });
   }
 
   const command = {
     type: 'enroll',
     id: parseInt(id),
+    cardId: cardId,
     name: name,
     phone: phone || ''
   };
@@ -225,7 +207,7 @@ app.post('/api/command/enroll', (req, res) => {
   mqttClient.publish(topic, JSON.stringify(command));
 
   console.log(`📤 Sent enroll command to ${deviceId}:`, command);
-  io.emit('command-sent', { deviceId, type: 'enroll', id, name });
+  io.emit('command-sent', { deviceId, type: 'enroll', id, name, cardId });
   
   res.json({ 
     success: true, 
@@ -250,10 +232,6 @@ app.post('/api/command/delete', (req, res) => {
   mqttClient.publish(topic, JSON.stringify(command));
 
   console.log(`📤 Sent delete command to ${deviceId}:`, command);
-  
-  // Delete from local database too
-  db.run('DELETE FROM users WHERE deviceId = ? AND userId = ?', [deviceId, id]);
-  
   io.emit('command-sent', { deviceId, type: 'delete', id });
   
   res.json({ 
@@ -278,10 +256,6 @@ app.post('/api/command/clear', (req, res) => {
   mqttClient.publish(topic, JSON.stringify(command));
 
   console.log(`📤 Sent clear command to ${deviceId}`);
-  
-  // Clear from local database too
-  db.run('DELETE FROM users WHERE deviceId = ?', [deviceId]);
-  
   io.emit('command-sent', { deviceId, type: 'clear' });
   
   res.json({ 
@@ -336,7 +310,6 @@ app.get('/api/access-logs', (req, res) => {
     [limit],
     (err, rows) => {
       if (err) return res.status(500).json({ error: err.message });
-      console.log(`📊 Returning ${rows.length} access logs`);
       res.json(rows);
     }
   );
@@ -345,11 +318,10 @@ app.get('/api/access-logs', (req, res) => {
 app.get('/api/users/:deviceId', (req, res) => {
   const { deviceId } = req.params;
   db.all(
-    `SELECT * FROM users WHERE deviceId = ? ORDER BY userId`,
+    `SELECT userId, userName, userPhone, cardId FROM users WHERE deviceId = ? ORDER BY userId`,
     [deviceId],
     (err, rows) => {
       if (err) return res.status(500).json({ error: err.message });
-      console.log(`📊 Returning ${rows.length} users for device ${deviceId}`);
       res.json(rows);
     }
   );
@@ -381,26 +353,9 @@ app.get('/health', (req, res) => {
   });
 });
 
-// Socket.IO connection
-io.on('connection', (socket) => {
-  console.log('🔌 Client connected:', socket.id);
-  
-  // Send current devices on connect
-  const devices = Array.from(connectedDevices.entries()).map(([deviceId, data]) => ({
-    deviceId,
-    ...data
-  }));
-  socket.emit('devices-list', devices);
-  
-  socket.on('disconnect', () => {
-    console.log('🔌 Client disconnected:', socket.id);
-  });
-});
-
-const PORT = process.env.PORT || 3000;
+const PORT = process.env.PORT || 10000;
 server.listen(PORT, () => {
   console.log(`🚀 Fingerprint Dashboard running on port ${PORT}`);
   console.log(`📊 Dashboard: http://localhost:${PORT}`);
   console.log(`🔗 MQTT Broker: ${MQTT_BROKER}`);
-  console.log(`💾 Database: ./fingerprint.db (persistent)`);
 });
