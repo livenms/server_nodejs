@@ -371,7 +371,9 @@
                 
                 <h3>Recent Access Logs</h3>
                 <div style="max-height: 300px; overflow-y: auto;" id="recentAccess">
-                    <!-- Access logs will appear here -->
+                    <div class="log-entry info">
+                        <strong>[System Start]</strong> Waiting for access logs...
+                    </div>
                 </div>
             </div>
 
@@ -416,7 +418,7 @@
             <h2>Real-time Logs</h2>
             <div style="max-height: 300px; overflow-y: auto;" id="realtimeLogs">
                 <div class="log-entry info">
-                    <strong>[22:08:14]</strong> System started - Waiting for MQTT messages...
+                    <strong>[System Start]</strong> Waiting for MQTT messages...
                 </div>
             </div>
         </div>
@@ -461,7 +463,7 @@
         let currentDeviceId = '8C128B2B1838';
         let accessStats = { granted: 0, denied: 0 };
 
-        // Socket event listeners
+        // Socket event listeners - FIXED VERSIONS
         socket.on('connect', () => {
             showNotification('Connected to dashboard server', 'success');
             updateStatus(true);
@@ -473,32 +475,45 @@
         });
 
         socket.on('heartbeat', (data) => {
-            addLog(`Heartbeat from ${data.deviceId} - Uptime: ${data.uptime}s`, 'info');
+            addLog(`Heartbeat from ${data.deviceId}`, 'info');
             updateDeviceStatus(data);
         });
 
         socket.on('status', (data) => {
-            addLog(`Status update from ${data.deviceId} - ${data.totalUsers} users`, 'info');
-            updateUsers(data.users);
+            addLog(`Status update from ${data.deviceId}`, 'info');
+            // FIX: Handle different user data structures
+            if (data.users && Array.isArray(data.users)) {
+                const formattedUsers = data.users.map(user => ({
+                    userId: user.id || user.userId,
+                    userName: user.name || user.userName || 'Unknown',
+                    userPhone: user.phone || user.userPhone || 'N/A',
+                    cardId: user.cardId || user.cardID || 'N/A'
+                }));
+                updateUsers(formattedUsers);
+            }
             updateSystemStatus(data);
         });
 
         socket.on('access', (data) => {
+            // FIX: Ensure we have proper data
+            const userName = data.userName || data.name || 'Unknown';
+            const cardId = data.cardId || 'No Card ID';
             const status = data.granted ? 'GRANTED' : 'DENIED';
             const type = data.granted ? 'success' : 'error';
-            const cardId = data.cardId || 'No Card ID';
-            addLog(`ACCESS: ${data.name} (Card:${cardId}) - ${status}`, type);
+            
+            addLog(`ACCESS: ${userName} (Card: ${cardId}) - ${status}`, type);
             addAccessLog(data);
             updateAccessStats(data.granted);
             updateChart();
         });
 
         socket.on('enrollment', (data) => {
-            addLog(`ENROLLMENT: ${data.status}`, data.success ? 'success' : 'warning');
+            const status = data.success ? 'SUCCESS' : 'FAILED';
+            addLog(`ENROLLMENT: ${data.status || 'Completed'} - ${status}`, data.success ? 'success' : 'warning');
         });
 
         socket.on('device-event', (data) => {
-            addLog(`SYSTEM: ${data.action} - ${data.name || data.id}`, 'info');
+            addLog(`SYSTEM: ${data.action} - ${data.message}`, 'info');
         });
 
         socket.on('command-sent', (data) => {
@@ -512,24 +527,33 @@
         function loadInitialData() {
             fetch('/api/access-logs?limit=10')
                 .then(r => r.json())
-                .then(logs => updateRecentAccess(logs));
+                .then(logs => {
+                    if (logs && logs.length > 0) {
+                        updateRecentAccess(logs);
+                    }
+                })
+                .catch(err => console.error('Error loading access logs:', err));
                 
             fetch('/api/users/8C128B2B1838')
                 .then(r => r.json())
-                .then(users => updateUsers(users));
+                .then(users => {
+                    if (users && users.length > 0) {
+                        updateUsers(users);
+                    }
+                })
+                .catch(err => console.error('Error loading users:', err));
         }
 
         function updateDeviceStatus(data) {
             const devicesElement = document.getElementById('connectedDevices');
-            devicesElement.textContent = '1'; // Your device is connected
+            devicesElement.textContent = '1';
             
-            // Update device list
             const deviceList = document.getElementById('deviceList');
             deviceList.innerHTML = `
                 <div class="device-card">
                     <div class="device-info">
                         <h4>Device: <span class="device-id">${data.deviceId}</span></h4>
-                        <p>IP: ${data.ip} | RSSI: ${data.rssi} dBm</p>
+                        <p>IP: ${data.ip || 'Unknown'} | RSSI: ${data.rssi || 'N/A'} dBm</p>
                         <small>Last seen: Just now</small>
                     </div>
                     <button class="btn btn-primary" onclick="selectDevice('${data.deviceId}')">Select</button>
@@ -568,24 +592,29 @@
             const statusElement = document.getElementById('systemStatus');
             statusElement.innerHTML = `
                 <p><strong>Device:</strong> ${data.deviceId}</p>
-                <p><strong>IP:</strong> ${data.ip}</p>
-                <p><strong>WiFi:</strong> ${data.wifi ? 'Connected' : 'Disconnected'}</p>
-                <p><strong>Sensor:</strong> ${data.sensor ? 'OK' : 'Error'}</p>
-                <p><strong>Uptime:</strong> ${Math.floor(data.uptime / 60)} minutes</p>
-                <p><strong>RSSI:</strong> ${data.rssi} dBm</p>
-                <p><strong>Enrolling:</strong> ${data.enrolling ? 'Yes' : 'No'}</p>
+                <p><strong>IP:</strong> ${data.ip || 'Unknown'}</p>
+                <p><strong>WiFi RSSI:</strong> ${data.rssi || 'N/A'} dBm</p>
+                <p><strong>Free Heap:</strong> ${data.freeHeap || 'N/A'} bytes</p>
+                <p><strong>Uptime:</strong> ${data.uptime ? Math.floor(data.uptime / 60000) + ' minutes' : 'N/A'}</p>
             `;
         }
 
         function addAccessLog(data) {
             const container = document.getElementById('recentAccess');
+            const userName = data.userName || data.name || 'Unknown';
             const cardId = data.cardId || 'No Card ID';
             const newLog = document.createElement('div');
             newLog.className = `log-entry ${data.granted ? 'success' : 'error'}`;
             newLog.innerHTML = `
                 <strong>[${new Date().toLocaleTimeString()}]</strong> 
-                ${data.name} (Card: ${cardId}) - <strong>${data.granted ? 'GRANTED' : 'DENIED'}</strong>
+                ${userName} (Card: ${cardId}) - <strong>${data.granted ? 'GRANTED' : 'DENIED'}</strong>
             `;
+            
+            // Remove initial placeholder if exists
+            if (container.children.length === 1 && container.children[0].textContent.includes('System Start')) {
+                container.innerHTML = '';
+            }
+            
             container.insertBefore(newLog, container.firstChild);
             
             // Keep only last 10 logs
@@ -600,15 +629,17 @@
 
         function updateRecentAccess(logs) {
             const container = document.getElementById('recentAccess');
-            container.innerHTML = logs.map(log => {
-                const cardId = log.cardId || 'No Card ID';
-                return `
-                <div class="log-entry ${log.granted ? 'success' : 'error'}">
+            container.innerHTML = '';
+            
+            logs.forEach(log => {
+                const logEntry = document.createElement('div');
+                logEntry.className = `log-entry ${log.granted ? 'success' : 'error'}`;
+                logEntry.innerHTML = `
                     <strong>[${new Date(log.timestamp).toLocaleTimeString()}]</strong> 
-                    ${log.userName} (Card: ${cardId}) - <strong>${log.granted ? 'GRANTED' : 'DENIED'}</strong>
-                </div>
+                    ${log.userName} (Card: ${log.cardId || 'No Card ID'}) - <strong>${log.granted ? 'GRANTED' : 'DENIED'}</strong>
                 `;
-            }).join('');
+                container.appendChild(logEntry);
+            });
             
             document.getElementById('todayAccess').textContent = logs.length;
         }
@@ -682,10 +713,10 @@
             currentDeviceId = deviceId;
             showNotification(`Selected device: ${deviceId}`, 'info');
             
-            // Load users for this device
             fetch(`/api/users/${deviceId}`)
                 .then(r => r.json())
-                .then(users => updateUsers(users));
+                .then(users => updateUsers(users))
+                .catch(err => console.error('Error loading users:', err));
         }
 
         function openEnrollModal() {
@@ -761,7 +792,6 @@
                 .then(data => {
                     if (data.success) {
                         showNotification('Clear all command sent', 'success');
-                        // Clear users table
                         document.getElementById('usersTable').innerHTML = 
                             '<tr><td colspan="5" style="text-align: center; padding: 20px;">No users enrolled</td></tr>';
                         document.getElementById('totalUsers').textContent = '0';
