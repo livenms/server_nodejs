@@ -3,10 +3,19 @@ const http = require('http');
 const socketIo = require('socket.io');
 const mqtt = require('mqtt');
 const sqlite3 = require('sqlite3').verbose();
-const path = require('path');
 const cors = require('cors');
 
+// Configuration
+const PORT = 3000;
+const MQTT_BROKER = 'mqtt://broker.hivemq.com:1883';
+const DEVICE_ID = '8C128B2B1838';
+
+// Initialize Express
 const app = express();
+app.use(cors());
+app.use(express.json());
+app.use(express.static('public'));
+
 const server = http.createServer(app);
 const io = socketIo(server, {
   cors: {
@@ -15,182 +24,171 @@ const io = socketIo(server, {
   }
 });
 
-// MQTT Configuration - Same as ESP32
-const MQTT_BROKER = 'mqtt://broker.hivemq.com:1883';
-const MQTT_TOPIC_BASE = 'fingerprint/#';
+// Initialize SQLite Database
+const db = new sqlite3.Database('./fingerprint.db', (err) => {
+  if (err) {
+    console.error('Database error:', err);
+  } else {
+    console.log('Connected to SQLite database');
+    initDatabase();
+  }
+});
 
-// Connect to MQTT
+// Create tables
+function initDatabase() {
+  db.run(`CREATE TABLE IF NOT EXISTS users (
+    id INTEGER PRIMARY KEY,
+    name TEXT NOT NULL,
+    phone TEXT,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+  )`);
+
+  db.run(`CREATE TABLE IF NOT EXISTS access_logs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER,
+    user_name TEXT,
+    granted INTEGER,
+    timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
+  )`);
+
+  db.run(`CREATE TABLE IF NOT EXISTS device_events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    action TEXT,
+    message TEXT,
+    user_id INTEGER,
+    timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
+  )`);
+
+  console.log('Database tables initialized');
+}
+
+// MQTT Client
 const mqttClient = mqtt.connect(MQTT_BROKER);
-
-// Store connected devices and data
-const connectedDevices = new Map();
+const topicBase = `fingerprint/${DEVICE_ID}`;
 
 mqttClient.on('connect', () => {
-  console.log('✅ Connected to MQTT broker');
-  mqttClient.subscribe(MQTT_TOPIC_BASE, (err) => {
+  console.log('Connected to MQTT broker');
+  
+  // Subscribe to all device topics
+  mqttClient.subscribe(`${topicBase}/#`, (err) => {
     if (!err) {
-      console.log('✅ Subscribed to MQTT topics:', MQTT_TOPIC_BASE);
-    } else {
-      console.error('❌ Subscription error:', err);
+      console.log(`Subscribed to ${topicBase}/#`);
     }
   });
 });
 
 mqttClient.on('message', (topic, message) => {
   try {
-    const messageString = message.toString();
-    const topicParts = topic.split('/');
-    const deviceId = topicParts[1];
-    const messageType = topicParts[2];
-    
-    console.log(`📨 MQTT [${deviceId}/${messageType}]: ${messageString.substring(0, 100)}`);
-    
-    let data;
-    
-    // Try to parse as JSON, if fails treat as plain text
-    try {
-      data = JSON.parse(messageString);
-    } catch (jsonError) {
-      // It's plain text - create a simple data object
-      data = {
-        type: 'message',
-        text: messageString,
-        deviceId: deviceId,
-        timestamp: new Date().toISOString()
-      };
-    }
+    const data = JSON.parse(message.toString());
+    console.log('MQTT Message:', topic, data);
 
-    // Update device last seen
-    connectedDevices.set(deviceId, {
-      ...connectedDevices.get(deviceId),
-      lastSeen: new Date(),
-      status: 'online',
-      ip: data.ip || connectedDevices.get(deviceId)?.ip,
-      rssi: data.rssi || connectedDevices.get(deviceId)?.rssi
-    });
+    // Broadcast to all connected web clients
+    io.emit('mqtt-message', { topic, data });
 
-    // Route messages to Socket.IO based on message type
-    if (data.type === 'heartbeat' || messageType === 'heartbeat') {
-      io.emit('heartbeat', { ...data, deviceId, timestamp: new Date() });
+    // Handle specific topics
+    if (topic.endsWith('/access')) {
+      handleAccessLog(data);
+    } else if (topic.endsWith('/device-event')) {
+      handleDeviceEvent(data);
+    } else if (topic.endsWith('/status')) {
+      handleSystemStatus(data);
+    } else if (topic.endsWith('/heartbeat')) {
+      io.emit('device-heartbeat', data);
+    } else if (topic.endsWith('/enrollment')) {
+      io.emit('enrollment-update', data);
     }
-    else if (data.type === 'status' || messageType === 'status') {
-      io.emit('status', { ...data, deviceId });
-      if (data.users) {
-        updateUsers(deviceId, data.users);
+  } catch (error) {
+    console.error('Error processing MQTT message:', error);
+  }
+});
+
+// Database Handlers
+function handleAccessLog(data) {
+  db.run(
+    'INSERT INTO access_logs (user_id, user_name, granted) VALUES (?, ?, ?)',
+    [data.userId, data.userName, data.granted ? 1 : 0],
+    (err) => {
+      if (err) console.error('Error saving access log:', err);
+      else {
+        io.emit('access-log', data);
+        getRecentAccessLogs((logs) => {
+          io.emit('recent-logs', logs);
+        });
       }
     }
-    else if (data.type === 'access' || messageType === 'access') {
-      io.emit('access', { 
-        ...data, 
-        deviceId, 
-        timestamp: new Date(),
-        messageType: data.granted ? 'success' : 'error'
-      });
-      saveAccessLog(deviceId, data);
+  );
+}
+
+function handleDeviceEvent(data) {
+  db.run(
+    'INSERT INTO device_events (action, message, user_id) VALUES (?, ?, ?)',
+    [data.action, data.message, data.userId || null],
+    (err) => {
+      if (err) console.error('Error saving device event:', err);
+      else io.emit('device-event', data);
     }
-    else if (data.type === 'enrollment' || messageType === 'enrollment') {
-      io.emit('enrollment', { ...data, deviceId, timestamp: new Date() });
-      saveSystemLog(deviceId, 'enrollment', data.status || data.text);
-    }
-    else if (data.type === 'device-event' || messageType === 'device-event') {
-      io.emit('device-event', { ...data, deviceId, timestamp: new Date() });
-      saveSystemLog(deviceId, 'system', data.action || data.message || data.text);
-    }
-    else {
-      // Generic message handling
-      io.emit('message', { ...data, deviceId, timestamp: new Date(), topic });
-    }
-    
-  } catch (error) {
-    console.error('❌ Error processing MQTT message:', error);
-    console.error('Message content:', message.toString());
+  );
+}
+
+function handleSystemStatus(data) {
+  if (data.users) {
+    // Update users in database
+    data.users.forEach(user => {
+      db.run(
+        'INSERT OR REPLACE INTO users (id, name, phone) VALUES (?, ?, ?)',
+        [user.id, user.name, user.phone]
+      );
+    });
   }
-});
+  io.emit('system-status', data);
+}
 
-// Middleware
-app.use(cors());
-app.use(express.json());
-app.use(express.static('public'));
-
-// Database setup
-const db = new sqlite3.Database(':memory:'); // Use :memory: for Render, or './fingerprint.db' for persistent
-
-db.serialize(() => {
-  db.run(`CREATE TABLE IF NOT EXISTS devices (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    deviceId TEXT UNIQUE,
-    ip TEXT,
-    lastSeen DATETIME,
-    status TEXT,
-    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-  )`);
-
-  db.run(`CREATE TABLE IF NOT EXISTS access_logs (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    deviceId TEXT,
-    userName TEXT,
-    userId INTEGER,
-    granted BOOLEAN,
-    timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
-  )`);
-
-  db.run(`CREATE TABLE IF NOT EXISTS users (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    deviceId TEXT,
-    userId INTEGER,
-    userName TEXT,
-    userPhone TEXT,
-    enrolledAt DATETIME DEFAULT CURRENT_TIMESTAMP
-  )`);
-
-  db.run(`CREATE TABLE IF NOT EXISTS system_logs (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    deviceId TEXT,
-    type TEXT,
-    message TEXT,
-    timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
-  )`);
-});
-
-function updateUsers(deviceId, users) {
-  db.run('DELETE FROM users WHERE deviceId = ?', [deviceId], (err) => {
-    if (err) console.error('Error clearing users:', err);
-    
-    if (users && Array.isArray(users)) {
-      users.forEach(user => {
-        db.run(
-          `INSERT INTO users (deviceId, userId, userName, userPhone) VALUES (?, ?, ?, ?)`,
-          [deviceId, user.id, user.name, user.phone || '']
-        );
-      });
+// API Endpoints
+app.get('/api/users', (req, res) => {
+  db.all('SELECT * FROM users ORDER BY id', [], (err, rows) => {
+    if (err) {
+      res.status(500).json({ error: err.message });
+    } else {
+      res.json(rows);
     }
   });
-}
+});
 
-function saveAccessLog(deviceId, data) {
-  if (data.name !== undefined && data.id !== undefined && data.granted !== undefined) {
-    db.run(
-      `INSERT INTO access_logs (deviceId, userName, userId, granted) VALUES (?, ?, ?, ?)`,
-      [deviceId, data.name, data.id, data.granted]
-    );
-  }
-}
+app.get('/api/access-logs', (req, res) => {
+  const limit = req.query.limit || 50;
+  db.all(
+    'SELECT * FROM access_logs ORDER BY timestamp DESC LIMIT ?',
+    [limit],
+    (err, rows) => {
+      if (err) {
+        res.status(500).json({ error: err.message });
+      } else {
+        res.json(rows);
+      }
+    }
+  );
+});
 
-function saveSystemLog(deviceId, type, message) {
-  if (message) {
-    db.run(
-      `INSERT INTO system_logs (deviceId, type, message) VALUES (?, ?, ?)`,
-      [deviceId, type, message]
-    );
-  }
-}
+app.get('/api/device-events', (req, res) => {
+  const limit = req.query.limit || 50;
+  db.all(
+    'SELECT * FROM device_events ORDER BY timestamp DESC LIMIT ?',
+    [limit],
+    (err, rows) => {
+      if (err) {
+        res.status(500).json({ error: err.message });
+      } else {
+        res.json(rows);
+      }
+    }
+  );
+});
 
-// Command endpoints - Send commands via MQTT
-app.post('/api/command/enroll', (req, res) => {
-  const { deviceId, id, name, phone } = req.body;
+app.post('/api/enroll', (req, res) => {
+  const { id, name, phone } = req.body;
   
-  if (!deviceId || !id || !name) {
-    return res.status(400).json({ error: 'Missing required fields' });
+  if (!id || !name) {
+    return res.status(400).json({ error: 'ID and name are required' });
   }
 
   const command = {
@@ -200,24 +198,15 @@ app.post('/api/command/enroll', (req, res) => {
     phone: phone || ''
   };
 
-  const topic = `fingerprint/${deviceId}/commands`;
-  mqttClient.publish(topic, JSON.stringify(command));
-
-  console.log(`📤 Sent enroll command to ${deviceId}:`, command);
-  io.emit('command-sent', { deviceId, type: 'enroll', id, name });
-  
-  res.json({ 
-    success: true, 
-    message: 'Enrollment command sent via MQTT',
-    command: command
-  });
+  mqttClient.publish(`${topicBase}/commands`, JSON.stringify(command));
+  res.json({ success: true, message: 'Enrollment command sent' });
 });
 
-app.post('/api/command/delete', (req, res) => {
-  const { deviceId, id } = req.body;
+app.post('/api/delete', (req, res) => {
+  const { id } = req.body;
   
-  if (!deviceId || !id) {
-    return res.status(400).json({ error: 'Missing deviceId or id' });
+  if (!id) {
+    return res.status(400).json({ error: 'ID is required' });
   }
 
   const command = {
@@ -225,134 +214,70 @@ app.post('/api/command/delete', (req, res) => {
     id: parseInt(id)
   };
 
-  const topic = `fingerprint/${deviceId}/commands`;
-  mqttClient.publish(topic, JSON.stringify(command));
-
-  console.log(`📤 Sent delete command to ${deviceId}:`, command);
-  io.emit('command-sent', { deviceId, type: 'delete', id });
+  mqttClient.publish(`${topicBase}/commands`, JSON.stringify(command));
   
-  res.json({ 
-    success: true, 
-    message: 'Delete command sent via MQTT',
-    command: command
+  // Also delete from local database
+  db.run('DELETE FROM users WHERE id = ?', [id], (err) => {
+    if (err) console.error('Error deleting from database:', err);
   });
+
+  res.json({ success: true, message: 'Delete command sent' });
 });
 
-app.post('/api/command/clear', (req, res) => {
-  const { deviceId } = req.body;
+app.post('/api/clear', (req, res) => {
+  const command = { type: 'clear' };
+  mqttClient.publish(`${topicBase}/commands`, JSON.stringify(command));
   
-  if (!deviceId) {
-    return res.status(400).json({ error: 'Missing deviceId' });
-  }
-
-  const command = {
-    type: 'clear'
-  };
-
-  const topic = `fingerprint/${deviceId}/commands`;
-  mqttClient.publish(topic, JSON.stringify(command));
-
-  console.log(`📤 Sent clear command to ${deviceId}`);
-  io.emit('command-sent', { deviceId, type: 'clear' });
-  
-  res.json({ 
-    success: true, 
-    message: 'Clear all command sent via MQTT',
-    command: command
+  // Clear local database
+  db.run('DELETE FROM users', [], (err) => {
+    if (err) console.error('Error clearing database:', err);
   });
+
+  res.json({ success: true, message: 'Clear all command sent' });
 });
 
-app.post('/api/command/getstatus', (req, res) => {
-  const { deviceId } = req.body;
-  
-  if (!deviceId) {
-    return res.status(400).json({ error: 'Missing deviceId' });
-  }
-
-  const command = {
-    type: 'getstatus'
-  };
-
-  const topic = `fingerprint/${deviceId}/commands`;
-  mqttClient.publish(topic, JSON.stringify(command));
-
-  console.log(`📤 Sent status request to ${deviceId}`);
-  io.emit('command-sent', { deviceId, type: 'getstatus' });
-  
-  res.json({ 
-    success: true, 
-    message: 'Status request sent via MQTT',
-    command: command
-  });
+app.get('/api/status', (req, res) => {
+  const command = { type: 'getstatus' };
+  mqttClient.publish(`${topicBase}/commands`, JSON.stringify(command));
+  res.json({ success: true, message: 'Status request sent' });
 });
 
-// Data retrieval endpoints
-app.get('/api/devices', (req, res) => {
-  // Return currently connected devices
-  const onlineDevices = Array.from(connectedDevices.entries()).map(([deviceId, data]) => ({
-    deviceId,
-    ip: data.ip || 'Unknown',
-    lastSeen: data.lastSeen,
-    status: 'online',
-    rssi: data.rssi
-  }));
-
-  res.json(onlineDevices);
-});
-
-app.get('/api/access-logs', (req, res) => {
-  const limit = req.query.limit || 50;
+// Helper Functions
+function getRecentAccessLogs(callback) {
   db.all(
-    `SELECT * FROM access_logs ORDER BY timestamp DESC LIMIT ?`,
-    [limit],
+    'SELECT * FROM access_logs ORDER BY timestamp DESC LIMIT 10',
+    [],
     (err, rows) => {
-      if (err) return res.status(500).json({ error: err.message });
-      res.json(rows);
+      if (!err) callback(rows);
     }
   );
-});
+}
 
-app.get('/api/users/:deviceId', (req, res) => {
-  const { deviceId } = req.params;
-  db.all(
-    `SELECT * FROM users WHERE deviceId = ? ORDER BY userId`,
-    [deviceId],
-    (err, rows) => {
-      if (err) return res.status(500).json({ error: err.message });
-      res.json(rows);
-    }
-  );
-});
+// WebSocket Connection
+io.on('connection', (socket) => {
+  console.log('Client connected:', socket.id);
 
-app.get('/api/system-logs', (req, res) => {
-  const limit = req.query.limit || 50;
-  db.all(
-    `SELECT * FROM system_logs ORDER BY timestamp DESC LIMIT ?`,
-    [limit],
-    (err, rows) => {
-      if (err) return res.status(500).json({ error: err.message });
-      res.json(rows);
-    }
-  );
-});
+  // Send initial data
+  db.all('SELECT * FROM users ORDER BY id', [], (err, users) => {
+    if (!err) socket.emit('users-list', users);
+  });
 
-// Serve dashboard
-app.get('/', (req, res) => {
-  res.sendFile(path.join(__dirname, 'public', 'index.html'));
-});
+  getRecentAccessLogs((logs) => {
+    socket.emit('recent-logs', logs);
+  });
 
-app.get('/health', (req, res) => {
-  res.json({ 
-    status: 'OK', 
-    mqtt: mqttClient.connected,
-    connectedDevices: connectedDevices.size,
-    timestamp: new Date().toISOString() 
+  socket.on('disconnect', () => {
+    console.log('Client disconnected:', socket.id);
+  });
+
+  socket.on('request-status', () => {
+    const command = { type: 'getstatus' };
+    mqttClient.publish(`${topicBase}/commands`, JSON.stringify(command));
   });
 });
 
-const PORT = process.env.PORT || 10000;
+// Start Server
 server.listen(PORT, () => {
-  console.log(`🚀 Fingerprint Dashboard running on port ${PORT}`);
-  console.log(`📊 Dashboard: http://localhost:${PORT}`);
-  console.log(`🔗 MQTT Broker: ${MQTT_BROKER}`);
+  console.log(`Server running on http://localhost:${PORT}`);
+  console.log(`MQTT Device ID: ${DEVICE_ID}`);
 });
