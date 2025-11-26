@@ -41,7 +41,7 @@
             box-shadow: 0 2px 10px rgba(0,0,0,0.1);
             margin-bottom: 20px;
             display: flex;
-            justify-content: between;
+            justify-content: space-between;
             align-items: center;
         }
         
@@ -391,6 +391,7 @@
                         <thead>
                             <tr>
                                 <th>ID</th>
+                                <th>Card ID</th>
                                 <th>Name</th>
                                 <th>Phone</th>
                                 <th>Actions</th>
@@ -398,7 +399,7 @@
                         </thead>
                         <tbody id="usersTable">
                             <tr>
-                                <td colspan="4" style="text-align: center; padding: 20px;">No users enrolled yet</td>
+                                <td colspan="5" style="text-align: center; padding: 20px;">No users enrolled yet</td>
                             </tr>
                         </tbody>
                     </table>
@@ -436,6 +437,10 @@
                 <div class="form-group">
                     <label for="enrollId">User ID (1-20):</label>
                     <input type="number" id="enrollId" min="1" max="20" required>
+                </div>
+                <div class="form-group">
+                    <label for="enrollCardId">Student Card ID:</label>
+                    <input type="text" id="enrollCardId" required placeholder="Enter student card ID">
                 </div>
                 <div class="form-group">
                     <label for="enrollName">Full Name:</label>
@@ -481,7 +486,8 @@
         socket.on('access', (data) => {
             const status = data.granted ? 'GRANTED' : 'DENIED';
             const type = data.granted ? 'success' : 'error';
-            addLog(`ACCESS: ${data.name} (ID:${data.id}) - ${status}`, type);
+            const cardId = data.cardId || 'No Card ID';
+            addLog(`ACCESS: ${data.name} (Card:${cardId}) - ${status}`, type);
             addAccessLog(data);
             updateAccessStats(data.granted);
             updateChart();
@@ -536,7 +542,7 @@
             const usersCount = document.getElementById('usersCount');
             
             if (!users || users.length === 0) {
-                tbody.innerHTML = '<tr><td colspan="4" style="text-align: center; padding: 20px;">No users enrolled yet</td></tr>';
+                tbody.innerHTML = '<tr><td colspan="5" style="text-align: center; padding: 20px;">No users enrolled yet</td></tr>';
                 usersCount.textContent = '(0 users)';
                 document.getElementById('totalUsers').textContent = '0';
                 return;
@@ -545,6 +551,7 @@
             tbody.innerHTML = users.map(user => `
                 <tr>
                     <td>${user.userId}</td>
+                    <td>${user.cardId || 'N/A'}</td>
                     <td>${user.userName}</td>
                     <td>${user.userPhone || 'N/A'}</td>
                     <td>
@@ -572,11 +579,12 @@
 
         function addAccessLog(data) {
             const container = document.getElementById('recentAccess');
+            const cardId = data.cardId || 'No Card ID';
             const newLog = document.createElement('div');
             newLog.className = `log-entry ${data.granted ? 'success' : 'error'}`;
             newLog.innerHTML = `
                 <strong>[${new Date().toLocaleTimeString()}]</strong> 
-                ${data.name} - <strong>${data.granted ? 'GRANTED' : 'DENIED'}</strong>
+                ${data.name} (Card: ${cardId}) - <strong>${data.granted ? 'GRANTED' : 'DENIED'}</strong>
             `;
             container.insertBefore(newLog, container.firstChild);
             
@@ -592,12 +600,15 @@
 
         function updateRecentAccess(logs) {
             const container = document.getElementById('recentAccess');
-            container.innerHTML = logs.map(log => `
+            container.innerHTML = logs.map(log => {
+                const cardId = log.cardId || 'No Card ID';
+                return `
                 <div class="log-entry ${log.granted ? 'success' : 'error'}">
                     <strong>[${new Date(log.timestamp).toLocaleTimeString()}]</strong> 
-                    ${log.userName} - <strong>${log.granted ? 'GRANTED' : 'DENIED'}</strong>
+                    ${log.userName} (Card: ${cardId}) - <strong>${log.granted ? 'GRANTED' : 'DENIED'}</strong>
                 </div>
-            `).join('');
+                `;
+            }).join('');
             
             document.getElementById('todayAccess').textContent = logs.length;
         }
@@ -689,13 +700,14 @@
             e.preventDefault();
             const deviceId = document.getElementById('enrollDevice').value;
             const id = document.getElementById('enrollId').value;
+            const cardId = document.getElementById('enrollCardId').value;
             const name = document.getElementById('enrollName').value;
             const phone = document.getElementById('enrollPhone').value;
 
             fetch('/api/command/enroll', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ deviceId, id, name, phone })
+                body: JSON.stringify({ deviceId, id, cardId, name, phone })
             })
             .then(r => r.json())
             .then(data => {
@@ -751,7 +763,7 @@
                         showNotification('Clear all command sent', 'success');
                         // Clear users table
                         document.getElementById('usersTable').innerHTML = 
-                            '<tr><td colspan="4" style="text-align: center; padding: 20px;">No users enrolled</td></tr>';
+                            '<tr><td colspan="5" style="text-align: center; padding: 20px;">No users enrolled</td></tr>';
                         document.getElementById('totalUsers').textContent = '0';
                     }
                 });
