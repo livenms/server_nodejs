@@ -47,11 +47,9 @@ mqttClient.on('message', (topic, message) => {
     
     let data;
     
-    // Try to parse as JSON, if fails treat as plain text
     try {
       data = JSON.parse(messageString);
     } catch (jsonError) {
-      // It's plain text - create a simple data object
       data = {
         type: 'message',
         text: messageString,
@@ -69,7 +67,7 @@ mqttClient.on('message', (topic, message) => {
       rssi: data.rssi || connectedDevices.get(deviceId)?.rssi
     });
 
-    // Route messages to Socket.IO based on message type
+    // FIXED: Proper message routing with better data handling
     if (data.type === 'heartbeat' || messageType === 'heartbeat') {
       io.emit('heartbeat', { ...data, deviceId, timestamp: new Date() });
     }
@@ -80,13 +78,18 @@ mqttClient.on('message', (topic, message) => {
       }
     }
     else if (data.type === 'access' || messageType === 'access') {
-      io.emit('access', { 
-        ...data, 
-        deviceId, 
-        timestamp: new Date(),
-        messageType: data.granted ? 'success' : 'error'
-      });
-      saveAccessLog(deviceId, data);
+      // FIX: Ensure proper data structure for access logs
+      const accessData = {
+        deviceId,
+        userId: data.userId || data.id || 0,
+        userName: data.userName || data.name || 'Unknown',
+        cardId: data.cardId || '',
+        granted: data.granted || false,
+        timestamp: new Date()
+      };
+      
+      io.emit('access', accessData);
+      saveAccessLog(deviceId, accessData);
     }
     else if (data.type === 'enrollment' || messageType === 'enrollment') {
       io.emit('enrollment', { ...data, deviceId, timestamp: new Date() });
@@ -97,7 +100,6 @@ mqttClient.on('message', (topic, message) => {
       saveSystemLog(deviceId, 'system', data.action || data.message || data.text);
     }
     else {
-      // Generic message handling
       io.emit('message', { ...data, deviceId, timestamp: new Date(), topic });
     }
     
@@ -113,7 +115,7 @@ app.use(express.json());
 app.use(express.static('public'));
 
 // Database setup
-const db = new sqlite3.Database(':memory:'); // Use :memory: for Render, or './fingerprint.db' for persistent
+const db = new sqlite3.Database(':memory:');
 
 db.serialize(() => {
   db.run(`CREATE TABLE IF NOT EXISTS devices (
@@ -160,9 +162,17 @@ function updateUsers(deviceId, users) {
     
     if (users && Array.isArray(users)) {
       users.forEach(user => {
+        // FIX: Handle different user object structures
+        const userData = {
+          id: user.id || user.userId,
+          name: user.name || user.userName || 'Unknown',
+          phone: user.phone || user.userPhone || '',
+          cardId: user.cardId || user.cardID || ''
+        };
+        
         db.run(
           `INSERT INTO users (deviceId, userId, userName, userPhone, cardId) VALUES (?, ?, ?, ?, ?)`,
-          [deviceId, user.id, user.name, user.phone || '', user.cardId || '']
+          [deviceId, userData.id, userData.name, userData.phone, userData.cardId]
         );
       });
     }
@@ -170,10 +180,10 @@ function updateUsers(deviceId, users) {
 }
 
 function saveAccessLog(deviceId, data) {
-  if (data.name !== undefined && data.id !== undefined && data.granted !== undefined) {
+  if (data.userName !== undefined && data.userId !== undefined && data.granted !== undefined) {
     db.run(
       `INSERT INTO access_logs (deviceId, userName, userId, cardId, granted) VALUES (?, ?, ?, ?, ?)`,
-      [deviceId, data.name, data.id, data.cardId || '', data.granted]
+      [deviceId, data.userName, data.userId, data.cardId || '', data.granted]
     );
   }
 }
@@ -291,7 +301,6 @@ app.post('/api/command/getstatus', (req, res) => {
 
 // Data retrieval endpoints
 app.get('/api/devices', (req, res) => {
-  // Return currently connected devices
   const onlineDevices = Array.from(connectedDevices.entries()).map(([deviceId, data]) => ({
     deviceId,
     ip: data.ip || 'Unknown',
