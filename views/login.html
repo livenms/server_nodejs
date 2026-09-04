@@ -1,0 +1,92 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<title>Sign in · Broodiinnox Portal</title>
+<link rel="icon" href="/assets/logo.png" />
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/assets/theme.css"/>
+<style>
+  body {
+    min-height: 100vh;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background:
+      radial-gradient(circle at 15% 15%, rgba(107,156,79,0.16), transparent 45%),
+      radial-gradient(circle at 85% 85%, rgba(42,46,143,0.10), transparent 45%),
+      var(--brand-900);
+    padding: 20px;
+  }
+  .login-wrap { width: 100%; max-width: 400px; }
+  .login-brand { display: flex; flex-direction: column; align-items: center; margin-bottom: 22px; text-align: center; }
+  .login-brand img { width: 64px; height: 64px; object-fit: contain; background: #fff; border-radius: 14px; padding: 8px; box-shadow: var(--shadow-md); }
+  .login-brand .name { font-family: var(--font-display); font-weight: 700; font-size: 21px; color: #fff; margin-top: 14px; }
+  .login-brand .tag { font-size: 12.5px; color: #b7cbb0; margin-top: 3px; }
+  .login-card { background: var(--surface); border-radius: var(--radius); padding: 30px 28px; box-shadow: var(--shadow-lg); }
+  .login-card h1 { font-size: 18px; margin-bottom: 4px; }
+  .login-card .lead { font-size: 13px; color: var(--ink-faint); margin-bottom: 22px; }
+  .login-error { display: none; background: var(--danger-bg); color: var(--danger); font-size: 13px; padding: 10px 12px; border-radius: var(--radius-sm); margin-bottom: 16px; }
+  .login-error.show { display: block; }
+  .login-footnote { text-align: center; font-size: 12px; color: #8fa787; margin-top: 18px; }
+</style>
+</head>
+<body>
+  <div class="login-wrap">
+    <div class="login-brand">
+      <img src="/assets/logo.png" alt="Afriinnox" />
+      <div class="name">Broodiinnox Portal</div>
+      <div class="tag">Afriinnox · Smart Brooding System</div>
+    </div>
+
+    <div class="login-card">
+      <h1>Welcome back</h1>
+      <p class="lead">Sign in with the account provided by Afriinnox to manage or monitor your brooding devices.</p>
+
+      <div class="login-error" id="loginError"></div>
+
+      <form id="loginForm">
+        <div class="field">
+          <label for="username">Username</label>
+          <input type="text" id="username" autocomplete="username" placeholder="e.g. admin or your farm username" required />
+        </div>
+        <div class="field">
+          <label for="password">Password</label>
+          <input type="password" id="password" autocomplete="current-password" placeholder="••••••••" required />
+        </div>
+        <button type="submit" class="btn btn-primary btn-block" id="loginBtn">Sign in</button>
+      </form>
+    </div>
+
+    <p class="login-footnote">&copy; 2026 Afriinnox Ltd. Kigali, Rwanda.</p>
+  </div>
+
+  <script src="/assets/common.js"></script>
+  <script>
+    const form = document.getElementById("loginForm");
+    const errBox = document.getElementById("loginError");
+    const btn = document.getElementById("loginBtn");
+
+    form.addEventListener("submit", async (e) => {
+      e.preventDefault();
+      errBox.classList.remove("show");
+      btn.disabled = true;
+      btn.textContent = "Signing in…";
+      try {
+        const username = document.getElementById("username").value.trim();
+        const password = document.getElementById("password").value;
+        const { user } = await apiPost("/api/login", { username, password });
+        window.location.href = user.role === "admin" ? "/admin" : "/user";
+      } catch (err) {
+        errBox.textContent = err.message || "Sign in failed.";
+        errBox.classList.add("show");
+        btn.disabled = false;
+        btn.textContent = "Sign in";
+      }
+    });
+  </script>
+</body>
+</html>

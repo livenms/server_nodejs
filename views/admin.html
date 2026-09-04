@@ -1,0 +1,65 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<title>Admin · Broodiinnox Portal</title>
+<link rel="icon" href="/assets/logo.png" />
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/assets/theme.css"/>
+<link rel="stylesheet" href="/admin-assets/admin.css"/>
+</head>
+<body>
+  <div class="shell">
+    <aside class="shell-sidebar">
+      <div class="shell-brand">
+        <img src="/assets/logo.png" alt="Afriinnox" />
+        <div>
+          <div class="name">Broodiinnox</div>
+          <div class="tag">Admin Console</div>
+        </div>
+      </div>
+
+      <nav class="shell-nav">
+        <button class="nav-btn active" data-tab="overview"><span class="nav-icon">&#9673;</span> Overview</button>
+        <button class="nav-btn" data-tab="devices"><span class="nav-icon">&#9737;</span> Devices</button>
+        <button class="nav-btn" data-tab="users"><span class="nav-icon">&#9782;</span> Farm Users</button>
+        <button class="nav-btn" data-tab="payments"><span class="nav-icon">&#8383;</span> Payments</button>
+      </nav>
+
+      <div class="shell-sidebar-spacer"></div>
+
+      <div class="shell-user-box">
+        <div class="who" id="sbName">—</div>
+        <div class="role">Administrator</div>
+        <button id="logoutBtn">Sign out</button>
+      </div>
+    </aside>
+
+    <main class="shell-main">
+      <header class="shell-topbar">
+        <div>
+          <p class="eyebrow" id="pageEyebrow">Fleet overview</p>
+          <h1 id="pageTitle">Overview</h1>
+        </div>
+        <div class="shell-topbar-right">
+          <button class="btn btn-secondary btn-sm" id="changePwBtn">Change password</button>
+        </div>
+      </header>
+
+      <section class="shell-content" id="content">
+        <div class="skeleton" style="height:120px;border-radius:12px;"></div>
+      </section>
+    </main>
+  </div>
+
+  <!-- ==================== MODALS ==================== -->
+  <div class="modal-overlay hidden" id="modalHost"></div>
+
+  <script src="https://unpkg.com/mqtt/dist/mqtt.min.js"></script>
+  <script src="/assets/common.js"></script>
+  <script src="/admin-assets/admin.js"></script>
+</body>
+</html>

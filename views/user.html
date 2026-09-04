@@ -1,0 +1,60 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<title>My Farm · Broodiinnox Portal</title>
+<link rel="icon" href="/assets/logo.png" />
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/assets/theme.css"/>
+<link rel="stylesheet" href="/user-assets/user.css"/>
+</head>
+<body>
+  <div class="shell">
+    <aside class="shell-sidebar">
+      <div class="shell-brand">
+        <img src="/assets/logo.png" alt="Afriinnox" />
+        <div>
+          <div class="name">Broodiinnox</div>
+          <div class="tag">Farm Portal</div>
+        </div>
+      </div>
+
+      <nav class="shell-nav">
+        <button class="nav-btn active" data-tab="dashboard"><span class="nav-icon">&#9673;</span> Dashboard</button>
+        <button class="nav-btn" data-tab="account"><span class="nav-icon">&#9782;</span> My Account</button>
+      </nav>
+
+      <div class="shell-sidebar-spacer"></div>
+
+      <div class="shell-user-box">
+        <div class="who" id="sbName">—</div>
+        <div class="role" id="sbFarm">Farm user</div>
+        <button id="logoutBtn">Sign out</button>
+      </div>
+    </aside>
+
+    <main class="shell-main">
+      <header class="shell-topbar">
+        <div>
+          <p class="eyebrow" id="pageEyebrow">Live monitoring</p>
+          <h1 id="pageTitle">Dashboard</h1>
+        </div>
+        <div class="shell-topbar-right" id="deviceSwitcherHost"></div>
+      </header>
+
+      <section class="shell-content" id="content">
+        <div class="skeleton" style="height:140px;border-radius:12px;"></div>
+      </section>
+    </main>
+  </div>
+
+  <div class="modal-overlay hidden" id="modalHost"></div>
+
+  <script src="https://unpkg.com/mqtt/dist/mqtt.min.js"></script>
+  <script src="/assets/common.js"></script>
+  <script src="/user-assets/user.js"></script>
+</body>
+</html>
