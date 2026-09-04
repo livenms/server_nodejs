@@ -1,10 +1,19 @@
+// server.js
 import express from "express";
 import session from "express-session";
 import path from "path";
 import { fileURLToPath } from "url";
+import { createServer } from "http";
 
 import { requireAuth, requireAdmin } from "./lib/auth.js";
 import * as db from "./lib/db.js";
+import { 
+  initWebSocketServer, 
+  sendCommand, 
+  simulateDevice,
+  isDeviceConnected,
+  getDeviceSessions
+} from "./lib/websocket.js";
 
 const app = express();
 const __filename = fileURLToPath(import.meta.url);
@@ -31,8 +40,7 @@ app.use(
   })
 );
 
-// Publicly servable static assets (no secrets live here - API calls are
-// what actually require an authenticated session).
+// Publicly servable static assets
 app.use("/assets", express.static(path.join(__dirname, "public/assets")));
 app.use("/admin-assets", express.static(path.join(__dirname, "public/admin-assets")));
 app.use("/user-assets", express.static(path.join(__dirname, "public/user-assets")));
@@ -58,6 +66,9 @@ function publicUser(u) {
 function publicDevice(d) {
   const status = db.subscriptionStatus(d.id);
   const owner = d.ownerId ? db.findUserById(d.ownerId) : null;
+  const connected = isDeviceConnected(d.deviceId);
+  const session = getDeviceSessions().get(d.deviceId);
+  
   return {
     id: d.id,
     deviceId: d.deviceId,
@@ -70,6 +81,8 @@ function publicDevice(d) {
     ownerName: owner ? owner.name : null,
     ownerUsername: owner ? owner.username : null,
     subscription: status,
+    connected: connected,
+    lastData: session || null
   };
 }
 
@@ -254,11 +267,45 @@ app.delete("/api/admin/payments/:id", requireAdmin, (req, res) => {
 });
 
 // ------------------------------------------------------------------
+// WebSocket command API (admin sends commands via HTTP, forwarded to WS)
+// ------------------------------------------------------------------
+app.post("/api/device/command/:deviceId", requireAdmin, (req, res) => {
+  try {
+    const { command, value } = req.body || {};
+    if (!command) {
+      return res.status(400).json({ error: "Command is required." });
+    }
+    sendCommand(req.params.deviceId, command, value);
+    res.json({ ok: true });
+  } catch (e) {
+    res.status(400).json({ error: e.message });
+  }
+});
+
+// ------------------------------------------------------------------
 app.use((req, res) => {
   res.status(404).json({ error: "Not found." });
 });
 
+// ------------------------------------------------------------------
+// Start server with WebSocket support
+// ------------------------------------------------------------------
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => {
+const server = createServer(app);
+initWebSocketServer(server);
+
+// Start simulation for testing (optional - remove for production)
+// This simulates a device called "BROODIINNOX-001" for demo purposes
+// Uncomment to enable simulation
+/*
+const testDevice = db.findDeviceByExternalId("BROODIINNOX-001");
+if (testDevice) {
+  simulateDevice("BROODIINNOX-001", 3000);
+  console.log("Device simulation started for BROODIINNOX-001");
+}
+*/
+
+server.listen(PORT, () => {
   console.log("Broodiinnox Portal running on port " + PORT);
+  console.log("WebSocket server is active");
 });
