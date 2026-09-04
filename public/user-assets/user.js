@@ -1,5 +1,5 @@
 /* ==========================================================
-   BROODIINNOX FARM USER PORTAL
+   BROODIINNOX FARM USER PORTAL - WebSocket Version
    ========================================================== */
 
 const PAGE_META = {
@@ -14,13 +14,11 @@ let state = {
   devices: [],
   activeDeviceId: null, // devices[].id (record id)
   latestData: {},
-  brokerConnected: false,
-  deviceOnline: null,
+  deviceOnline: false,
   lastDeviceSeen: 0,
   activeTab: "dashboard",
+  ws: null,
 };
-
-let mqttClient = null;
 
 /* ---------------- BOOTSTRAP ---------------- */
 (async function init() {
@@ -99,108 +97,119 @@ function renderDeviceSwitcher() {
 function switchDevice(deviceRecordId) {
   state.activeDeviceId = deviceRecordId;
   state.latestData = {};
-  state.brokerConnected = false;
-  state.deviceOnline = null;
-  connectMqttForActiveDevice();
+  state.deviceOnline = false;
+  connectWebSocketForActiveDevice();
   if (state.activeTab === "dashboard") renderDashboard();
 }
 
 /* ==========================================================
-   MQTT — one connection at a time, for the selected device
+   WEBSOCKET — one connection at a time, for the selected device
    ========================================================== */
-function connectMqttForActiveDevice() {
-  if (mqttClient) {
-    try { mqttClient.end(true); } catch (e) {}
-    mqttClient = null;
+function connectWebSocketForActiveDevice() {
+  if (state.ws) {
+    try { state.ws.close(); } catch (e) {}
+    state.ws = null;
   }
   const device = activeDevice();
   if (!device) return;
 
-  const broker = device.mqttBroker || "broker.hivemq.com";
-  const prefix = device.topicPrefix || "BROODIINNOX";
-  const base = `${prefix}/${device.deviceId}`;
+  const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
+  const wsUrl = `${protocol}//${window.location.host}/?deviceId=${device.deviceId}&role=user`;
+  
+  state.ws = new WebSocket(wsUrl);
 
-  mqttClient = mqtt.connect(`wss://${broker}:8884/mqtt`, { reconnectPeriod: 3000 });
+  state.ws.onopen = () => {
+    updateConnectionUI(true);
+  };
 
-  mqttClient.on("connect", () => {
-    state.brokerConnected = true;
-    mqttClient.subscribe(`${base}/data`);
-    mqttClient.subscribe(`${base}/status`);
-    updateConnectionUI();
-  });
-
-  ["reconnect", "close", "offline", "error"].forEach((evt) => {
-    mqttClient.on(evt, () => {
-      state.brokerConnected = evt === "reconnect" ? false : state.brokerConnected;
-      if (evt !== "reconnect") state.brokerConnected = false;
-      if (evt === "close" || evt === "offline") state.deviceOnline = null;
-      updateConnectionUI();
-    });
-  });
-
-  mqttClient.on("message", (topic, payload) => {
-    const text = payload.toString();
-    if (topic === `${base}/status`) {
-      try {
-        const msg = JSON.parse(text);
-        if (msg.status === "offline") { markOffline(); return; }
-        if (msg.status === "online") markOnline();
-      } catch (e) {
-        if (text === "offline") { markOffline(); return; }
-        if (text === "online") markOnline();
-      }
-      return;
+  state.ws.onmessage = (event) => {
+    try {
+      const data = JSON.parse(event.data);
+      handleWebSocketMessage(data);
+    } catch (e) {
+      // Ignore parse errors
     }
-    if (topic === `${base}/data`) {
-      try {
-        state.latestData = JSON.parse(text);
-        markOnline();
-        if (state.activeTab === "dashboard") renderDashboard();
-      } catch (e) {}
-    }
-  });
+  };
+
+  state.ws.onclose = () => {
+    state.deviceOnline = false;
+    updateConnectionUI(false);
+    // Attempt to reconnect after delay
+    setTimeout(() => {
+      connectWebSocketForActiveDevice();
+    }, 5000);
+  };
+
+  state.ws.onerror = (error) => {
+    console.error("WebSocket error:", error);
+  };
 }
 
-function markOnline() {
-  state.lastDeviceSeen = Date.now();
-  if (state.deviceOnline !== true) {
+function handleWebSocketMessage(data) {
+  if (data.type === "data") {
+    state.latestData = data.payload;
+    state.lastDeviceSeen = Date.now();
     state.deviceOnline = true;
-    updateConnectionUI();
+    updateConnectionUI(true);
+    if (state.activeTab === "dashboard") renderDashboard();
+  }
+  
+  if (data.type === "status") {
+    const isOnline = data.payload.status === "online" || data.payload.status === "connected";
+    if (isOnline !== state.deviceOnline) {
+      state.deviceOnline = isOnline;
+      updateConnectionUI(isOnline);
+    }
   }
 }
-function markOffline() {
-  state.deviceOnline = false;
-  updateConnectionUI();
-}
 
-function publish(topic, value) {
-  const device = activeDevice();
-  if (!device || !mqttClient || !mqttClient.connected) {
+function sendCommand(command, value) {
+  if (!state.ws || state.ws.readyState !== WebSocket.OPEN) {
     toast("Not connected to the device yet — please wait a moment and try again.", "error");
-    return;
+    return false;
   }
-  const prefix = device.topicPrefix || "BROODIINNOX";
-  mqttClient.publish(`${prefix}/${device.deviceId}/control/${topic}`, String(value));
+  state.ws.send(JSON.stringify({
+    type: "command",
+    command: command,
+    value: value
+  }));
+  return true;
 }
 
-function updateConnectionUI() {
+function updateConnectionUI(isOnline) {
   const brokerDot = document.getElementById("brokerDot");
   const brokerText = document.getElementById("brokerText");
   const deviceDot = document.getElementById("deviceDot");
   const deviceText = document.getElementById("deviceText");
   if (!brokerDot) return;
-  brokerDot.className = "status-dot " + (state.brokerConnected ? "online" : "offline");
-  brokerText.textContent = state.brokerConnected ? "Broker connected" : "Broker disconnected";
-  if (state.deviceOnline === true) {
+  
+  const connected = state.ws && state.ws.readyState === WebSocket.OPEN;
+  brokerDot.className = "status-dot " + (connected ? "online" : "offline");
+  brokerText.textContent = connected ? "Connected to server" : "Disconnected";
+  
+  if (isOnline) {
     deviceDot.className = "status-dot online";
     deviceText.textContent = "Device online";
-  } else if (state.deviceOnline === false) {
+  } else {
     deviceDot.className = "status-dot offline";
     deviceText.textContent = "Device offline";
-  } else {
-    deviceDot.className = "status-dot connecting";
-    deviceText.textContent = "Connecting…";
   }
+}
+
+function publish(topic, value) {
+  // Map topic to command name
+  const commandMap = {
+    "relay": "relay",
+    "max_temp": "max_temp",
+    "min_temp": "min_temp",
+    "sensor": "sensor",
+    "animal_preset": "animal_preset",
+    "factory_reset": "factory_reset",
+    "device_active": "device_active"
+  };
+  
+  const command = commandMap[topic] || topic;
+  sendCommand(command, value);
 }
 
 /* ==========================================================
@@ -221,7 +230,7 @@ function renderDashboard() {
     return;
   }
 
-  if (!mqttClient) connectMqttForActiveDevice();
+  if (!state.ws) connectWebSocketForActiveDevice();
 
   const d = state.latestData || {};
   const sub = device.subscription;
@@ -314,7 +323,7 @@ function renderDashboard() {
     </details>
   `;
 
-  updateConnectionUI();
+  updateConnectionUI(state.deviceOnline);
 }
 
 function buildGauge(d) {
@@ -405,9 +414,9 @@ function buildTimeline(d) {
 }
 
 /* ---------------- CONTROLS ---------------- */
-window.setRelay = (v) => publish("relay", v);
-window.setMaxTemp = () => publish("max_temp", Math.round(Number(document.getElementById("maxTSlider").value)));
-window.setMinTemp = () => publish("min_temp", Math.round(Number(document.getElementById("minTSlider").value)));
+window.setRelay = (v) => { publish("relay", v); };
+window.setMaxTemp = () => { publish("max_temp", Math.round(Number(document.getElementById("maxTSlider").value))); };
+window.setMinTemp = () => { publish("min_temp", Math.round(Number(document.getElementById("minTSlider").value))); };
 window.toggleSensor = (id) => {
   const d = state.latestData || {};
   const current = d[`s${id.slice(-1)}_enabled`] ? "ON" : "OFF";
