@@ -1,5 +1,5 @@
 /* ==========================================================
-   BROODIINNOX ADMIN CONSOLE
+   BROODIINNOX ADMIN CONSOLE - WebSocket Version
    ========================================================== */
 
 const PAGE_META = {
@@ -15,11 +15,10 @@ let state = {
   users: [],
   payments: [],
   stats: {},
-  liveStatus: {}, // deviceRecordId -> { online: bool, lastTemp, lastSeen }
+  liveStatus: {}, // deviceRecordId -> { online: bool, lastTemp, lastSeen, data: {} }
   activeTab: "overview",
+  wsConnections: {}, // deviceId -> WebSocket
 };
-
-const mqttClients = {}; // broker -> mqtt.js client, shared across devices on same broker
 
 /* ---------------- BOOTSTRAP ---------------- */
 (async function init() {
@@ -47,7 +46,7 @@ const mqttClients = {}; // broker -> mqtt.js client, shared across devices on sa
   });
 
   await refreshAll();
-  connectLiveStatusForDevices();
+  connectWebSocketsForDevices();
   setTab("overview");
 })();
 
@@ -84,74 +83,112 @@ function setTab(tab, btnEl) {
 }
 
 /* ==========================================================
-   LIVE MQTT STATUS (browser-side, public broker)
+   WEBSOCKET CONNECTIONS
    ========================================================== */
-function connectLiveStatusForDevices() {
-  const byBroker = {};
+function connectWebSocketsForDevices() {
   state.devices.forEach((d) => {
-    const broker = d.mqttBroker || "broker.hivemq.com";
-    (byBroker[broker] = byBroker[broker] || []).push(d);
-  });
-
-  Object.entries(byBroker).forEach(([broker, devices]) => {
-    if (mqttClients[broker]) return; // already connected
-    let client;
-    try {
-      client = mqtt.connect(`wss://${broker}:8884/mqtt`, { reconnectPeriod: 4000 });
-    } catch (e) {
-      return;
-    }
-    mqttClients[broker] = client;
-
-    client.on("connect", () => {
-      devices.forEach((d) => {
-        const prefix = d.topicPrefix || "BROODIINNOX";
-        client.subscribe(`${prefix}/${d.deviceId}/status`);
-        client.subscribe(`${prefix}/${d.deviceId}/data`);
-      });
-    });
-
-    client.on("message", (topic, payload) => {
-      // Topic prefix varies per firmware build (e.g. "BROODIINNOX" vs
-      // "broodinnox"), so match on the device ID segment rather than a
-      // fixed prefix: "<anything>/<deviceId>/(status|data)".
-      const match = topic.match(/^[^/]+\/([^/]+)\/(status|data)$/);
-      if (!match) return;
-      const externalId = match[1];
-      const device = state.devices.find((d) => d.deviceId === externalId);
-      if (!device) return;
-
-      let msg;
-      try {
-        msg = JSON.parse(payload.toString());
-      } catch (e) {
-        return;
-      }
-
-      const online = msg.status ? msg.status !== "offline" : true;
-      state.liveStatus[device.id] = {
-        online,
-        lastSeen: Date.now(),
-        aveTemp: typeof msg.ave_temp === "number" && msg.ave_temp > -900 ? msg.ave_temp : null,
-        deviceLocked: !!msg.device_locked,
-      };
-
-      if (state.activeTab === "devices") renderDevices();
-      if (state.activeTab === "overview") renderOverview();
-    });
+    connectWebSocketForDevice(d.deviceId);
   });
 }
 
-function publishDeviceCommand(device, topic, value) {
-  const broker = device.mqttBroker || "broker.hivemq.com";
-  const client = mqttClients[broker];
-  if (!client || !client.connected) {
-    toast("Not connected to the MQTT broker yet — try again in a moment.", "error");
+function connectWebSocketForDevice(deviceId) {
+  if (state.wsConnections[deviceId]) {
+    // Already connected
     return;
   }
-  const prefix = device.topicPrefix || "BROODIINNOX";
-  client.publish(`${prefix}/${device.deviceId}/control/${topic}`, String(value));
-  toast(`Command sent to ${device.name}.`, "success");
+  
+  // Determine WebSocket URL
+  const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
+  const wsUrl = `${protocol}//${window.location.host}/?deviceId=${deviceId}&role=admin`;
+  
+  const ws = new WebSocket(wsUrl);
+  state.wsConnections[deviceId] = ws;
+  
+  ws.onopen = () => {
+    console.log(`WebSocket connected for device ${deviceId}`);
+  };
+  
+  ws.onmessage = (event) => {
+    try {
+      const data = JSON.parse(event.data);
+      handleWebSocketMessage(deviceId, data);
+    } catch (e) {
+      // Ignore parse errors
+    }
+  };
+  
+  ws.onclose = () => {
+    console.log(`WebSocket disconnected for device ${deviceId}`);
+    delete state.wsConnections[deviceId];
+    
+    // Update device status to offline
+    const device = state.devices.find(d => d.deviceId === deviceId);
+    if (device) {
+      state.liveStatus[device.id] = {
+        ...state.liveStatus[device.id],
+        online: false,
+        lastSeen: Date.now()
+      };
+      if (state.activeTab === "devices") renderDevices();
+      if (state.activeTab === "overview") renderOverview();
+    }
+    
+    // Attempt to reconnect after delay
+    setTimeout(() => {
+      connectWebSocketForDevice(deviceId);
+    }, 5000);
+  };
+  
+  ws.onerror = (error) => {
+    console.error(`WebSocket error for device ${deviceId}:`, error);
+  };
+}
+
+function handleWebSocketMessage(deviceId, data) {
+  const device = state.devices.find(d => d.deviceId === deviceId);
+  if (!device) return;
+  
+  if (data.type === "data") {
+    const payload = data.payload;
+    state.liveStatus[device.id] = {
+      online: true,
+      lastSeen: Date.now(),
+      aveTemp: typeof payload.ave_temp === "number" ? payload.ave_temp : null,
+      deviceLocked: !!payload.device_locked,
+      relayState: !!payload.relay_state,
+      data: payload
+    };
+    
+    if (state.activeTab === "devices") renderDevices();
+    if (state.activeTab === "overview") renderOverview();
+  }
+  
+  if (data.type === "status") {
+    const isOnline = data.payload.status === "online" || data.payload.status === "connected";
+    state.liveStatus[device.id] = {
+      ...state.liveStatus[device.id],
+      online: isOnline,
+      lastSeen: Date.now()
+    };
+    
+    if (state.activeTab === "devices") renderDevices();
+    if (state.activeTab === "overview") renderOverview();
+  }
+}
+
+function sendDeviceCommand(deviceId, command, value) {
+  const ws = state.wsConnections[deviceId];
+  if (!ws || ws.readyState !== WebSocket.OPEN) {
+    toast("Device not connected. Please wait and try again.", "error");
+    return false;
+  }
+  
+  ws.send(JSON.stringify({
+    type: "command",
+    command: command,
+    value: value
+  }));
+  return true;
 }
 
 function toggleDeviceLock(deviceRecordId) {
@@ -169,7 +206,10 @@ function toggleDeviceLock(deviceRecordId) {
     submitLabel: currentlyLocked ? "Unlock device" : "Lock device",
     danger: !currentlyLocked,
     onSubmit: async () => {
-      publishDeviceCommand(device, "device_active", nextAction);
+      const sent = sendDeviceCommand(device.deviceId, "device_active", nextAction);
+      if (sent) {
+        toast(`Command sent to ${device.name}.`, "success");
+      }
     },
   });
 }
@@ -294,8 +334,8 @@ function renderUnassignedList(devices) {
 function renderDevices() {
   const rows = state.devices.map((d) => {
     const live = state.liveStatus[d.id];
-    const dotClass = live ? (live.online ? "online" : "offline") : "";
-    const liveLabel = live ? (live.online ? "Online" : "Offline") : "Connecting…";
+    const dotClass = live ? (live.online ? "online" : "offline") : "offline";
+    const liveLabel = live ? (live.online ? "Online" : "Offline") : "Offline";
     const tempLabel = live && live.aveTemp !== null ? `${live.aveTemp.toFixed(1)}&deg;C` : "—";
     const locked = live ? live.deviceLocked : null;
     const lockBadge =
@@ -321,7 +361,7 @@ function renderDevices() {
         <td>${lockBadge}</td>
         <td>
           <div class="row-actions">
-            <button class="btn ${lockBtnClass} btn-sm" onclick="toggleDeviceLock('${d.id}')" ${live ? "" : "disabled title=\"Waiting for live connection…\""}>${lockBtnLabel}</button>
+            <button class="btn ${lockBtnClass} btn-sm" onclick="toggleDeviceLock('${d.id}')">${lockBtnLabel}</button>
             <button class="btn btn-secondary btn-sm" onclick="openAssignModal('${d.id}')">Assign</button>
             <button class="btn btn-secondary btn-sm" onclick="openEditDeviceModal('${d.id}')">Edit</button>
             <button class="btn btn-outline-danger btn-sm" onclick="confirmDeleteDevice('${d.id}')">Delete</button>
@@ -368,7 +408,7 @@ function openAddDeviceModal() {
       await apiPost("/api/admin/devices", fd);
       toast("Device added.", "success");
       await refreshAll();
-      connectLiveStatusForDevices();
+      connectWebSocketForDevice(fd.deviceId);
       renderDevices();
     },
   });
@@ -461,6 +501,11 @@ function confirmDeleteDevice(deviceRecordId) {
     submitLabel: "Delete device",
     danger: true,
     onSubmit: async () => {
+      // Close WebSocket connection
+      if (state.wsConnections[d.deviceId]) {
+        state.wsConnections[d.deviceId].close();
+        delete state.wsConnections[d.deviceId];
+      }
       await apiDelete(`/api/admin/devices/${deviceRecordId}`);
       toast("Device deleted.", "success");
       await refreshAll();
